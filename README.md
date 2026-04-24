@@ -2,7 +2,7 @@
 
 本项目基于 **Backbone-Neck-Head** 解耦设计，实现了一个针对紫砂壶图像的多任务分类模型。模型能够同时识别紫砂壶的**花型 (Flower Type)** 和 **提手类型 (Handle Type)**，并采用了基于 Mask 的背景扣除预处理技术。
 
-## 项目结构
+## 一、项目结构
 
 ```c++
 Project/
@@ -23,14 +23,96 @@ Project/
 
 
 
-##  模型架构
+##二、模型架构
+###1.总览
 
 本项目将网络拆解为三个核心模块：
-1. **Backbone (骨干网)**: 预训练的 ResNet18 特征提取层（去除池化和全连接），使得输出截断在形状为 $[Batch Size, 512, 7, 7]$ 的高维特征图（Feature Map）上
-2. **Neck (颈部)**: 使用 `AdaptiveAvgPool2d((1, 1))` 将 $7 \times 7$ 空间维度上的特征强行求平均，将空间特征压缩为数据最终变为形状为 $[Batch Size, 512]$ 的特征向量特征向量。
-3. **Head (头部)**: 两个平行的分类头，分别处理 17 类花型分类和 6 类提手分类任务。
-   - 每个分支并没有直接从 512 维映射到类别数，而是经历了一个隐层结构（如 `Linear(512, 256)` -> `BatchNorm1d` -> `ReLU` -> `Dropout` -> `Linear(256, num_classes)`）
-   - 在反向传播计算梯度时，总损失函数 $L_{total} = L_{flower} + L_{handle}$，$ L_{flower} 和 L_{handle}$都是交叉熵损失
+① Backbone (骨干网)：负责从原始图片中逐层提取出从边缘纹理到复杂形状的通用视觉特征。
+
+② Neck (颈部)：负责将繁杂的高维特征图进行压缩与降维，提炼出高度浓缩的核心特征向量。
+
+③ Head (头部)：负责接收浓缩后的特征向量，并针对如分类判断进行最终的数学计算与决策输出。
+
+```python
+class Backbone(nn.Module):
+    """
+    【骨干网络】：负责从原始图像中提取高维特征图。
+    """
+    def __init__(self):
+        super().__init__()
+        # 加载预训练权重，利用 ImageNet 的先验知识识别纹理
+        resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        # 取出除去最后两层（全局池化和全连接）的所有层
+        self.features = nn.Sequential(*list(resnet.children())[:-2])
+        self.out_channels = 512 # ResNet18 最后一层特征图的深度
+
+    def forward(self, x):
+        return self.features(x) # 输出: [Batch, 512, 7, 7] (对于 224 输入)
+
+class Neck(nn.Module):
+    """
+    【颈部网络】：负责对特征图进行空间降维和全局特征整合。
+    """
+    def __init__(self, in_channels):
+        super().__init__()
+        # 全局平均池化：将 7x7 的空间维度压缩为 1x1
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+    def forward(self, x):
+        x = self.avgpool(x)
+        return torch.flatten(x, 1) # 输出: [Batch, 512]
+
+class ClassificationHead(nn.Module):
+    """
+    【分类头】：负责根据整合后的特征进行最终的类别概率预测。
+    """
+    def __init__(self, in_channels, num_classes):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(in_channels, 256),
+            nn.BatchNorm1d(256), # 标准化，加速收敛并防止梯度爆炸
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),     # 丢弃 30% 神经元，防止模型对 Else 类过拟合
+            nn.Linear(256, num_classes)
+        )
+
+    def forward(self, x):
+        return self.fc(x)
+
+class MultiTaskNet(nn.Module):
+    """
+    【主网络】：整合 Backbone, Neck 和两个独立的 Head。
+    实现“一套特征，多项任务”的并行预测。
+    """
+    def __init__(self, num_flower_classes, num_handle_classes):
+        super().__init__()
+        self.backbone = Backbone()
+        self.neck = Neck(self.backbone.out_channels)
+        # 分别定义花型和提手的预测分支
+        self.flower_head = ClassificationHead(self.backbone.out_channels, num_flower_classes)
+        self.handle_head = ClassificationHead(self.backbone.out_channels, num_handle_classes)
+
+    def forward(self, x):
+        feat = self.backbone(x)         # 提取特征图
+        shared_feat = self.neck(feat)   # 整合为特征向量
+        # 输出两组预测概率分布（Logits）
+        return self.flower_head(shared_feat), self.handle_head(shared_feat)
+```
+**以下为模型结构图**
+<img width="333" height="401" alt="image" src="https://github.com/user-attachments/assets/29a880f8-4d0d-483c-81fd-b5e27ecb2eac" />
+
+ ###2.Backbone
+ <img width="485" height="934" alt="image" src="https://github.com/user-attachments/assets/e9f32c93-3daf-40b7-8c7b-95d7fed7385e" />
+ **Backbone 的逻辑：**
+初始下采样：通过第一层 7x7 卷积和最大池化，迅速降低图像空间分辨率，提取基础的纹理和边缘特征。
+
+残差学习阶段 (Layer 1-4)：通过 4 组由残差块（Residual Blocks）组成的阶段，在保持梯度传递稳定的同时，提取越来越复杂的几何形状和语义信息。
+
+空间与通道的平衡：随着网络加深，特征图的空间尺寸（长宽）每进入一个新阶段就会缩小一半（下采样），而特征通道数（深度）则会翻倍，实现了信息的极度浓缩。
+ ###3.Backbone
+ 
+
+
 
 ## 项目依赖库列表
 
