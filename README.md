@@ -27,6 +27,7 @@ Project/
 ### 1.总览
 
 本项目将网络拆解为三个核心模块：
+
 ① Backbone (骨干网)：以resnet18为基础，负责从原始图片中逐层提取出从边缘纹理到复杂形状的通用视觉特征。
 
 ② Neck (颈部)：负责将繁杂的高维特征图进行压缩与降维，提炼出高度浓缩的核心特征向量。
@@ -103,7 +104,7 @@ class MultiTaskNet(nn.Module):
 
  ### 2.Backbone
  <img width="485" height="934" alt="image" src="https://github.com/user-attachments/assets/e9f32c93-3daf-40b7-8c7b-95d7fed7385e" />
- 义resnet18为基础
+ 以resnet18为基础
 backbone 的逻辑：
  
 1. 初始下采样：通过第一层 7x7 卷积和最大池化，迅速降低图像空间分辨率，提取基础的纹理和边缘特征。
@@ -209,5 +210,11 @@ $$L_{total} = L_{flower\_type} + L_{handle\_type}$$
 - **自动保存**：每轮训练结束后，系统会自动保存带有轮数标记的权重文件（如 `chahu_model_epoch_10.pth`）。
 - **终极考核**：全部训练结束后，系统将自动加载验证集表现最佳的权重，在**完全隔离的测试集（Test Set）**上进行最终评估，确保模型具备真实的业务推理能力。
 
-6. 训练日志
-见
+训练日志见：https://github.com/ALIENUS11/Chahu/blob/master/%E8%AE%AD%E7%BB%83%E6%97%A5%E5%BF%97.md
+## 五、测试结果
+
+| 任务分支 (Task) | 总体准确率 (Accuracy) | 宏平均 F1 (Macro Avg F1) | 加权平均 F1 (Weighted Avg F1) |
+| :--- | :---: | :---: | :---: |
+| **提手分类 (Handle Type)** | **97.0%** | **0.75** | **0.97** |
+| **花型分类 (Flower Type)** | **90.0%** | 0.29 | 0.88 |
+详细测试日志见：https://github.com/ALIENUS11/Chahu/blob/master/%E6%B5%8B%E8%AF%95%E6%97%A5%E5%BF%97.md
